@@ -199,18 +199,30 @@ def gerar_telefone():
 
 # Função para inserir dados na tabela Cliente
 def inserir_clientes(n):
+    emails_usados = set()
     for _ in range(n):
         nome = fake.name()
+        # Garantir email único
         email = fake.email()
+        while email in emails_usados:
+            email = fake.email()
+        emails_usados.add(email)
+        
         telefone = gerar_telefone()
         cur.execute("INSERT INTO Cliente (nome, email, telefone) VALUES (%s, %s, %s) RETURNING id", (nome, email, telefone))
     conn.commit()
 
 # Função para inserir dados na tabela Prestador
 def inserir_prestadores(n):
+    emails_usados = set()
     for _ in range(n):
         nome = fake.name()
+        # Garantir email único
         email = fake.email()
+        while email in emails_usados:
+            email = fake.email()
+        emails_usados.add(email)
+        
         telefone = gerar_telefone()
         cur.execute("INSERT INTO Prestador (nome, email, telefone) VALUES (%s, %s, %s) RETURNING id", (nome, email, telefone))
     conn.commit()
@@ -218,6 +230,8 @@ def inserir_prestadores(n):
 # Função para inserir dados na tabela Solicitacao
 def inserir_solicitacoes(n, clientes_ids, prestadores_ids):
     status_options = ['Aberto', 'Em andamento', 'Concluído', 'Cancelado', 'Aguardando pagamento', 'Em análise']
+    solicitacoes_inseridas = []
+    
     for _ in range(n):
         id_cliente = random.choice(clientes_ids)
         id_prestador = random.choice(prestadores_ids)
@@ -225,23 +239,59 @@ def inserir_solicitacoes(n, clientes_ids, prestadores_ids):
         valor = round(random.uniform(50, 1500), 2)
         data_criacao = fake.date_between(start_date='-1y', end_date='today')
         status = random.choice(status_options)
+        
         cur.execute("INSERT INTO Solicitacao (id_cliente, id_prestador, descricao, valor, data_criacao, status) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id", 
                     (id_cliente, id_prestador, descricao, valor, data_criacao, status))
+        
+        solicitacao_id = cur.fetchone()[0]
+        solicitacoes_inseridas.append({
+            'id': solicitacao_id,
+            'valor': valor,
+            'status': status
+        })
+    
     conn.commit()
+    return solicitacoes_inseridas
 
 # Função para inserir dados na tabela Reclamacao
-def inserir_reclamacoes(n, solicitacoes_ids):
+def inserir_reclamacoes(n, solicitacoes_info):
     status_options = ['Aberto', 'Em análise', 'Resolvido', 'Fechado', 'Aguardando resposta', 'Em mediação']
+    
+    # Filtrar apenas solicitações finalizadas (Concluído ou Cancelado)
+    solicitacoes_finalizadas = [s for s in solicitacoes_info if s['status'] in ['Concluído', 'Cancelado']]
+    
+    if len(solicitacoes_finalizadas) == 0:
+        print("Aviso: Nenhuma solicitação finalizada encontrada para criar reclamações")
+        return []
+    
+    # Limitar o número de reclamações ao número de solicitações finalizadas
+    n = min(n, len(solicitacoes_finalizadas))
+    
+    reclamacoes_inseridas = []
     for _ in range(n):
-        id_solicitacao = random.choice(solicitacoes_ids)
+        solicitacao = random.choice(solicitacoes_finalizadas)
+        id_solicitacao = solicitacao['id']
         descricao = random.choice(descricoes_reclamacao)
         status = random.choice(status_options)
+        
         cur.execute("INSERT INTO Reclamacao (id_solicitacao, descricao, status) VALUES (%s, %s, %s) RETURNING id", 
                     (id_solicitacao, descricao, status))
+        
+        reclamacao_id = cur.fetchone()[0]
+        reclamacoes_inseridas.append(reclamacao_id)
+        
+        # Remove a solicitação da lista para evitar reclamações duplicadas
+        solicitacoes_finalizadas.remove(solicitacao)
+    
     conn.commit()
+    return reclamacoes_inseridas
 
 # Função para inserir dados na tabela evidencia
 def inserir_evidencias(n, reclamacoes_ids):
+    if len(reclamacoes_ids) == 0:
+        print("Aviso: Nenhuma reclamação encontrada para criar evidências")
+        return
+    
     for _ in range(n):
         id_reclamacao = random.choice(reclamacoes_ids)
         descricao = random.choice(descricoes_evidencia)
@@ -252,13 +302,17 @@ def inserir_evidencias(n, reclamacoes_ids):
     conn.commit()
 
 # Função para inserir dados na tabela pagamento
-def inserir_pagamentos(n, solicitacoes_ids):
+def inserir_pagamentos(n, solicitacoes_info):
     status_options = ['Pendente', 'Pago', 'Cancelado', 'Estornado', 'Em processamento', 'Vencido']
+    
     for _ in range(n):
-        id_solicitacao = random.choice(solicitacoes_ids)
-        valor = round(random.uniform(50, 1500), 2)
+        solicitacao = random.choice(solicitacoes_info)
+        id_solicitacao = solicitacao['id']
+        # CORREÇÃO: Usar o mesmo valor da solicitação
+        valor = solicitacao['valor']
         status = random.choice(status_options)
         data_pagamento = fake.date_between(start_date='-1y', end_date='today')
+        
         cur.execute("INSERT INTO pagamento (id_solicitacao, valor, status, data_pagamento) VALUES (%s, %s, %s, %s)", 
                     (id_solicitacao, valor, status, data_pagamento))
     conn.commit()
@@ -266,14 +320,35 @@ def inserir_pagamentos(n, solicitacoes_ids):
 # Função para inserir dados na tabela Avaliacao
 def inserir_avaliacoes(n, clientes_ids, prestadores_ids):
     estrelas_options = ['1', '2', '3', '4', '5']
-    for _ in range(n):
+    combinacoes_usadas = set()
+    
+    avaliacoes_inseridas = 0
+    tentativas = 0
+    max_tentativas = n * 3  # Limita tentativas para evitar loop infinito
+    
+    while avaliacoes_inseridas < n and tentativas < max_tentativas:
         id_cliente = random.choice(clientes_ids)
         id_prestador = random.choice(prestadores_ids)
-        qtd_estrelas = random.choice(estrelas_options)
-        comentario = random.choice(avaliacoes_hardcoded)
-        data_avaliacao = fake.date_between(start_date='-1y', end_date='today')
-        cur.execute("INSERT INTO Avalicao (id_cliente, id_prestador, qtd_estrelas, comentario, data_avaliacao) VALUES (%s, %s, %s, %s, %s)", 
-                    (id_cliente, id_prestador, qtd_estrelas, comentario, data_avaliacao))
+        combinacao = (id_cliente, id_prestador)
+        
+        # CORREÇÃO: Verificar se a combinação já foi usada
+        if combinacao not in combinacoes_usadas:
+            combinacoes_usadas.add(combinacao)
+            
+            qtd_estrelas = random.choice(estrelas_options)
+            comentario = random.choice(avaliacoes_hardcoded)
+            data_avaliacao = fake.date_between(start_date='-1y', end_date='today')
+            
+            cur.execute("INSERT INTO Avalicao (id_cliente, id_prestador, qtd_estrelas, comentario, data_avaliacao) VALUES (%s, %s, %s, %s, %s)", 
+                        (id_cliente, id_prestador, qtd_estrelas, comentario, data_avaliacao))
+            
+            avaliacoes_inseridas += 1
+        
+        tentativas += 1
+    
+    if avaliacoes_inseridas < n:
+        print(f"Aviso: Só foi possível inserir {avaliacoes_inseridas} avaliações de {n} solicitadas (combinações únicas esgotadas)")
+    
     conn.commit()
 
 # Função para inserir dados na tabela Especialidade
@@ -310,24 +385,16 @@ cur.execute("SELECT id FROM Prestador")
 prestadores_ids = [row[0] for row in cur.fetchall()]
 
 print("Inserindo solicitações...")
-inserir_solicitacoes(50, clientes_ids, prestadores_ids)
-
-# Obter ids de solicitações
-cur.execute("SELECT id FROM Solicitacao")
-solicitacoes_ids = [row[0] for row in cur.fetchall()]
+solicitacoes_info = inserir_solicitacoes(50, clientes_ids, prestadores_ids)
 
 print("Inserindo reclamações...")
-inserir_reclamacoes(25, solicitacoes_ids)
-
-# Obter ids de reclamações
-cur.execute("SELECT id FROM Reclamacao")
-reclamacoes_ids = [row[0] for row in cur.fetchall()]
+reclamacoes_ids = inserir_reclamacoes(25, solicitacoes_info)
 
 print("Inserindo evidências...")
 inserir_evidencias(30, reclamacoes_ids)
 
 print("Inserindo pagamentos...")
-inserir_pagamentos(40, solicitacoes_ids)
+inserir_pagamentos(40, solicitacoes_info)
 
 print("Inserindo avaliações...")
 inserir_avaliacoes(35, clientes_ids, prestadores_ids)
@@ -351,3 +418,14 @@ inserir_prestador_especialidade(prestadores_ids, especialidades_ids)
 # Fechar conexão
 cur.close()
 conn.close()
+
+print("Script para popular o banco de dados executado com sucesso!")
+print(f"Dados inseridos:")
+print(f"- 25 clientes")
+print(f"- 15 prestadores")
+print(f"- 50 solicitações")
+print(f"- Reclamações (apenas para solicitações finalizadas)")
+print(f"- Evidências (baseadas nas reclamações criadas)")
+print(f"- 40 pagamentos")
+print(f"- Avaliações (sem duplicatas cliente-prestador)")
+print(f"- 15 especialidades")
